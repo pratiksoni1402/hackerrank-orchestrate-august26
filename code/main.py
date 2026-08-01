@@ -16,6 +16,12 @@ from pathlib import Path
 # Ensure code/ is on the path
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+from rich.console import Console
+from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn, TimeElapsedColumn
+from rich.panel import Panel
+from rich.table import Table
+from rich.style import Style
+
 from config import OUTPUT_PATH, OUTPUT_COLUMNS, OPENAI_API_KEY
 from data_loader import DataLoader
 from media_processor import MediaProcessor
@@ -24,127 +30,169 @@ from context_assembler import ContextAssembler
 from router import Router
 from safety import SafetyChecker
 
+console = Console()
 
 def main():
     start_time = time.time()
-    print("=" * 60)
-    print("  Message Notification Router")
-    print("=" * 60)
+    
+    console.print(Panel.fit(
+        "[bold cyan]Message Notification Router[/bold cyan]\n[dim]Hackathon Edition[/dim]",
+        border_style="cyan"
+    ))
 
     # --- Validate API key ---
     if not OPENAI_API_KEY:
-        print("❌ Error: OPEN_AI_API_KEY not found in environment or .env file")
+        console.print("[bold red]❌ Error: OPEN_AI_API_KEY not found in environment or .env file[/bold red]")
         sys.exit(1)
-    print(f"✅ API key loaded (ends with ...{OPENAI_API_KEY[-4:]})")
+    console.print(f"[green]✅ API key loaded[/green] [dim](ends with ...{OPENAI_API_KEY[-4:]})[/dim]\n")
 
     # --- Step 1: Load all data ---
-    print("\n📂 Step 1: Loading dataset...")
-    dl = DataLoader()
-    messages = dl.get_all_messages()
-    print(f"   Loaded {len(messages)} messages to route")
-    print(f"   {len(dl.users_df)} users, {len(dl.groups_df)} groups, "
-          f"{len(dl.business_accounts_df)} businesses")
-    print(f"   {len(dl.message_history_df)} historical messages with events")
+    with console.status("[bold blue]📂 Step 1: Loading dataset...", spinner="dots"):
+        dl = DataLoader()
+        messages = dl.get_all_messages()
+    
+    console.print(f"  [green]✓[/green] Loaded {len(messages)} messages to route")
+    console.print(f"  [green]✓[/green] {len(dl.users_df)} users, {len(dl.groups_df)} groups, {len(dl.business_accounts_df)} businesses")
+    console.print(f"  [green]✓[/green] {len(dl.message_history_df)} historical messages with events\n")
 
     # --- Step 2: Pre-process media ---
-    print("\n🎨 Step 2: Processing media files...")
-    mp = MediaProcessor()
-    media_results = mp.process_all(dl)
+    with console.status("[bold magenta]🎨 Step 2: Processing media files...", spinner="dots"):
+        mp = MediaProcessor()
+        media_results = mp.process_all(dl)
+    console.print("  [green]✓[/green] Media processing complete: images and voice notes cached\n")
 
     # --- Step 3: Initialize components ---
-    print("\n🔧 Step 3: Initializing routing components...")
-    er = EvidenceRetriever(dl)
-    ca = ContextAssembler(dl, media_results)
-    router = Router()
-    safety = SafetyChecker(dl)
-    print("   Evidence retriever, context assembler, router, safety checker ready")
+    with console.status("[bold yellow]🔧 Step 3: Initializing routing components...", spinner="dots"):
+        er = EvidenceRetriever(dl)
+        ca = ContextAssembler(dl, media_results)
+        router = Router()
+        safety = SafetyChecker(dl)
+    console.print("  [green]✓[/green] Evidence retriever, context assembler, router, safety checker ready\n")
 
     # --- Step 4: Route all messages ---
-    print(f"\n🚀 Step 4: Routing {len(messages)} messages...")
+    console.print(f"[bold green]🚀 Step 4: Routing {len(messages)} messages...[/bold green]")
     results = []
     action_counts = {"notify": 0, "digest": 0, "mute": 0}
     type_counts = {}
 
-    for i, msg in enumerate(messages):
-        msg_id = msg["message_id"]
-        progress = f"[{i+1}/{len(messages)}]"
+    try:
+        with Progress(
+            SpinnerColumn(),
+            TextColumn("[progress.description]{task.description}"),
+            BarColumn(),
+            TextColumn("[progress.percentage]{task.percentage:>3.0f}%"),
+            TextColumn("({task.completed}/{task.total})"),
+            TimeElapsedColumn(),
+            console=console,
+        ) as progress:
+            
+            task_id = progress.add_task("[cyan]Routing messages...", total=len(messages))
+            
+            for i, msg in enumerate(messages):
+                msg_id = msg["message_id"]
 
-        try:
-            # 4a. Retrieve evidence
-            evidence = er.find_evidence(msg)
+                try:
+                    # 4a. Retrieve evidence
+                    evidence = er.find_evidence(msg)
 
-            # 4b. Assemble context
-            context = ca.assemble(msg, evidence)
-            formatted_context = ca.format_for_prompt(context)
+                    # 4b. Assemble context
+                    context = ca.assemble(msg, evidence)
+                    formatted_context = ca.format_for_prompt(context)
 
-            # 4c. Route via LLM
-            llm_result = router.route(formatted_context, evidence)
+                    # 4c. Route via LLM
+                    llm_result = router.route(formatted_context, evidence)
 
-            # 4d. Safety post-check
-            final_result = safety.check(msg, context, llm_result)
+                    # 4d. Safety post-check
+                    final_result = safety.check(msg, context, llm_result)
 
-            # Ensure evidence_message_ids is set
-            if "evidence_message_ids" not in final_result or not final_result["evidence_message_ids"]:
-                final_result["evidence_message_ids"] = er.format_evidence_ids(evidence)
+                    # Ensure evidence_message_ids is set
+                    if "evidence_message_ids" not in final_result or not final_result["evidence_message_ids"]:
+                        final_result["evidence_message_ids"] = er.format_evidence_ids(evidence)
 
-            result = {
-                "message_id": msg_id,
-                "action": final_result["action"],
-                "message_type": final_result["message_type"],
-                "reason": final_result["reason"],
-                "confidence": final_result["confidence"],
-                "evidence_message_ids": final_result["evidence_message_ids"]
-            }
+                    result = {
+                        "message_id": msg_id,
+                        "action": final_result["action"],
+                        "message_type": final_result["message_type"],
+                        "reason": final_result["reason"],
+                        "confidence": final_result["confidence"],
+                        "evidence_message_ids": final_result["evidence_message_ids"]
+                    }
 
-            action_counts[result["action"]] = action_counts.get(result["action"], 0) + 1
-            type_counts[result["message_type"]] = type_counts.get(result["message_type"], 0) + 1
+                    action_counts[result["action"]] = action_counts.get(result["action"], 0) + 1
+                    type_counts[result["message_type"]] = type_counts.get(result["message_type"], 0) + 1
 
-            # Print progress
-            emoji = {"notify": "🔔", "digest": "📋", "mute": "🔇"}.get(result["action"], "❓")
-            print(f"   {progress} {emoji} {msg_id} → {result['action']} "
-                  f"({result['message_type']}, conf={result['confidence']})")
+                    # Update progress description
+                    emoji = {"notify": "🔔", "digest": "📋", "mute": "🔇"}.get(result["action"], "❓")
+                    color = {"notify": "bold red", "digest": "bold yellow", "mute": "dim white"}.get(result["action"], "white")
+                    
+                    desc = f"[cyan]Routing...[/cyan] [{color}]{emoji} {msg_id} → {result['action']}[/]"
+                    progress.update(task_id, advance=1, description=desc)
 
-        except Exception as e:
-            print(f"   {progress} ❌ {msg_id} → ERROR: {e}")
-            # Fallback for any error
-            evidence = er.find_evidence(msg)
-            result = {
-                "message_id": msg_id,
-                "action": "digest",
-                "message_type": "unknown",
-                "reason": f"Routing error: {str(e)[:100]}",
-                "confidence": 0.5,
-                "evidence_message_ids": er.format_evidence_ids(evidence)
-            }
-            action_counts["digest"] += 1
-            type_counts["unknown"] = type_counts.get("unknown", 0) + 1
+                except Exception as e:
+                    # Fallback for any error
+                    evidence = er.find_evidence(msg)
+                    result = {
+                        "message_id": msg_id,
+                        "action": "digest",
+                        "message_type": "unknown",
+                        "reason": f"Routing error: {str(e)[:100]}",
+                        "confidence": 0.5,
+                        "evidence_message_ids": er.format_evidence_ids(evidence)
+                    }
+                    action_counts["digest"] += 1
+                    type_counts["unknown"] = type_counts.get("unknown", 0) + 1
+                    
+                    progress.update(task_id, advance=1, description=f"[red]❌ Error on {msg_id}[/red]")
 
-        results.append(result)
+                results.append(result)
 
-        # Small delay between API calls to avoid rate limiting
-        if i < len(messages) - 1:
-            time.sleep(0.3)
+                # Small delay between API calls to avoid rate limiting
+                if i < len(messages) - 1:
+                    time.sleep(0.3)
+                    
+    except KeyboardInterrupt:
+        console.print(Panel(
+            f"[bold yellow]⚠️ Process cancelled by user![/bold yellow]\n[white]Saving {len(results)} completed messages...[/white]",
+            border_style="yellow"
+        ))
 
     # --- Step 5: Write output.csv ---
-    print(f"\n💾 Step 5: Writing output.csv...")
-    write_output(results)
-
+    with console.status("[bold cyan]💾 Step 5: Writing output.csv...", spinner="dots"):
+        write_output(results)
+    
     # --- Summary ---
     elapsed = time.time() - start_time
-    print(f"\n{'=' * 60}")
-    print(f"  ✅ COMPLETE — {len(results)} messages routed in {elapsed:.1f}s")
-    print(f"{'=' * 60}")
-    print(f"\n  Action distribution:")
+    
+    console.print(Panel.fit(
+        f"[bold green]✅ COMPLETE[/bold green] — {len(results)} messages routed in {elapsed:.1f}s",
+        border_style="green"
+    ))
+
+    # Action Table
+    action_table = Table(title="Action Distribution", title_style="bold blue")
+    action_table.add_column("Action", style="cyan", no_wrap=True)
+    action_table.add_column("Count", justify="right", style="magenta")
+    action_table.add_column("Percentage", justify="right", style="green")
+    action_table.add_column("Bar", justify="left")
+
     for action, count in sorted(action_counts.items()):
-        pct = count / len(results) * 100
-        bar = "█" * int(pct / 2)
-        print(f"    {action:8s}: {count:3d} ({pct:5.1f}%) {bar}")
+        pct = (count / len(results) * 100) if results else 0.0
+        bar = "[blue]" + "█" * int(pct / 2) + "[/blue]"
+        action_table.add_row(action, str(count), f"{pct:.1f}%", bar)
 
-    print(f"\n  Message type distribution:")
+    # Type Table
+    type_table = Table(title="Message Type Distribution", title_style="bold magenta")
+    type_table.add_column("Type", style="cyan")
+    type_table.add_column("Count", justify="right", style="magenta")
+
     for mtype, count in sorted(type_counts.items(), key=lambda x: -x[1]):
-        print(f"    {mtype:18s}: {count:3d}")
+        type_table.add_row(mtype, str(count))
 
-    print(f"\n  Output saved to: {OUTPUT_PATH}")
+    console.print("\n")
+    console.print(action_table)
+    console.print("\n")
+    console.print(type_table)
+    console.print(f"\n[dim]Output saved to: {OUTPUT_PATH}[/dim]")
 
 
 def write_output(results: list[dict]):
@@ -154,12 +202,11 @@ def write_output(results: list[dict]):
         writer.writeheader()
         for row in results:
             writer.writerow(row)
-    print(f"   ✅ Wrote {len(results)} rows to {OUTPUT_PATH}")
 
 
 def validate_output():
     """Quick validation of the output file."""
-    print("\n🔍 Validating output.csv...")
+    console.print("\n[bold cyan]🔍 Validating output.csv...[/bold cyan]")
     with open(OUTPUT_PATH) as f:
         reader = csv.DictReader(f)
         rows = list(reader)
@@ -187,11 +234,11 @@ def validate_output():
             errors.append(f"Row {i+1}: invalid confidence '{row['confidence']}'")
 
     if errors:
-        print(f"   ❌ {len(errors)} validation errors:")
+        console.print(f"  [red]❌ {len(errors)} validation errors:[/red]")
         for e in errors[:10]:
-            print(f"      • {e}")
+            console.print(f"     [red]•[/red] {e}")
     else:
-        print("   ✅ All validations passed!")
+        console.print("  [green]✅ All validations passed![/green]")
 
     return len(errors) == 0
 
