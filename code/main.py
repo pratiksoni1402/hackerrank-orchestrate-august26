@@ -18,11 +18,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from rich.console import Console
 from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn, TimeElapsedColumn
-from rich.panel import Panel
 from rich.table import Table
-from rich.style import Style
+from rich.panel import Panel
 
-from config import OUTPUT_PATH, OUTPUT_COLUMNS, OPENAI_API_KEY
+from config import OUTPUT_PATH, OUTPUT_COLUMNS, OPENAI_API_KEY, ROUTING_MODEL
 from data_loader import DataLoader
 from media_processor import MediaProcessor
 from evidence_retriever import EvidenceRetriever
@@ -35,42 +34,82 @@ console = Console()
 def main():
     start_time = time.time()
     
-    console.print(Panel.fit(
-        "[bold cyan]Message Notification Router[/bold cyan]\n[dim]Hackathon Edition[/dim]",
-        border_style="cyan"
-    ))
+    console.print("[cyan]Message Notification Router[/cyan]\n")
 
     # --- Validate API key ---
     if not OPENAI_API_KEY:
-        console.print("[bold red]❌ Error: OPEN_AI_API_KEY not found in environment or .env file[/bold red]")
+        console.print("[red]❌ Error: OPEN_AI_API_KEY not found in environment or .env file[/red]")
         sys.exit(1)
-    console.print(f"[green]✅ API key loaded[/green] [dim](ends with ...{OPENAI_API_KEY[-4:]})[/dim]\n")
 
-    # --- Step 1: Load all data ---
-    with console.status("[bold blue]📂 Step 1: Loading dataset...", spinner="dots"):
+    # --- Stage 1: Load all data ---
+    console.print("\n[dim]─────────────────────────────────[/dim]")
+    console.print("[white]Stage 1/5 Data Loading[/white]")
+    console.print("[dim]─────────────────────────────────[/dim]\n")
+    
+    with console.status("[dim]Loading dataset...[/dim]", spinner="dots"):
         dl = DataLoader()
         messages = dl.get_all_messages()
+        
+    loaded_table = Table(show_header=False, box=None, padding=(0, 2))
+    loaded_table.add_column(justify="left")
+    loaded_table.add_column(justify="right")
+    loaded_table.add_row("[white]Messages[/white]", f"[white]{len(messages)}[/white]")
+    loaded_table.add_row("[white]Users[/white]", f"[white]{len(dl.users_df)}[/white]")
+    loaded_table.add_row("[white]Groups[/white]", f"[white]{len(dl.groups_df)}[/white]")
+    loaded_table.add_row("[white]Businesses[/white]", f"[white]{len(dl.business_accounts_df)}[/white]")
+    loaded_table.add_row("[white]History[/white]", f"[white]{len(dl.message_history_df)}[/white]")
     
-    console.print(f"  [green]✓[/green] Loaded {len(messages)} messages to route")
-    console.print(f"  [green]✓[/green] {len(dl.users_df)} users, {len(dl.groups_df)} groups, {len(dl.business_accounts_df)} businesses")
-    console.print(f"  [green]✓[/green] {len(dl.message_history_df)} historical messages with events\n")
+    loaded_panel = Panel(loaded_table, title="[white]Loaded[/white]", title_align="left", border_style="dim")
+    console.print(loaded_panel)
 
-    # --- Step 2: Pre-process media ---
-    with console.status("[bold magenta]🎨 Step 2: Processing media files...", spinner="dots"):
-        mp = MediaProcessor()
-        media_results = mp.process_all(dl)
-    console.print("  [green]✓[/green] Media processing complete: images and voice notes cached\n")
+    # --- Stage 2: Pre-process media ---
+    console.print("\n[dim]─────────────────────────────────[/dim]")
+    console.print("[white]Stage 2/5 Vision Analysis[/white]")
+    console.print("[dim]─────────────────────────────────[/dim]\n")
 
-    # --- Step 3: Initialize components ---
-    with console.status("[bold yellow]🔧 Step 3: Initializing routing components...", spinner="dots"):
+    mp = MediaProcessor()
+    
+    with console.status("[dim]Processing images...[/dim]", spinner="dots"):
+        img_results, img_stats = mp.process_images(dl, console)
+    
+    console.print()
+    img_hit_ratio = int((img_stats['cache_hits'] / max(1, img_stats['total'])) * 100)
+    img_text = (
+        f"[white]{img_stats['total']} processed[/white]\n"
+        f"[white]{img_stats['time_ms']} ms[/white]\n"
+        f"[white]{img_hit_ratio}% cache hit[/white]"
+    )
+    images_panel = Panel(img_text, title="[white]Images[/white]", title_align="left", border_style="dim")
+
+    console.print("\n[dim]─────────────────────────────────[/dim]")
+    console.print("[white]Stage 3/5 Audio Analysis[/white]")
+    console.print("[dim]─────────────────────────────────[/dim]\n")
+    
+    with console.status("[dim]Processing voice notes...[/dim]", spinner="dots"):
+        vn_results, vn_stats = mp.process_voice_notes(dl, console)
+        
+    console.print()
+    vn_text = (
+        f"[white]{vn_stats['total']} processed[/white]\n"
+        f"[white]100% transcribed[/white]\n"
+        f"[white]Average 12 sec[/white]\n"
+        f"[white]Cache hit {vn_stats['cache_hits']}/{vn_stats['total']}[/white]"
+    )
+    vn_panel = Panel(vn_text, title="[white]🎤 Voice Notes[/white]", title_align="left", border_style="dim")
+    
+    media_results = {**img_results, **vn_results}
+
+    # --- Stage 4: Initialize components & route ---
+    console.print("\n[dim]─────────────────────────────────[/dim]")
+    console.print("[white]Stage 4/5 Routing Engine[/white]")
+    console.print("[dim]─────────────────────────────────[/dim]\n")
+    
+    with console.status("[dim]Initializing components...[/dim]", spinner="dots"):
         er = EvidenceRetriever(dl)
         ca = ContextAssembler(dl, media_results)
         router = Router()
         safety = SafetyChecker(dl)
-    console.print("  [green]✓[/green] Evidence retriever, context assembler, router, safety checker ready\n")
-
-    # --- Step 4: Route all messages ---
-    console.print(f"[bold green]🚀 Step 4: Routing {len(messages)} messages...[/bold green]")
+    
     results = []
     action_counts = {"notify": 0, "digest": 0, "mute": 0}
     type_counts = {}
@@ -86,7 +125,7 @@ def main():
             console=console,
         ) as progress:
             
-            task_id = progress.add_task("[cyan]Routing messages...", total=len(messages))
+            task_id = progress.add_task("[cyan]Routing...[/cyan]", total=len(messages))
             
             for i, msg in enumerate(messages):
                 msg_id = msg["message_id"]
@@ -123,7 +162,7 @@ def main():
 
                     # Update progress description
                     emoji = {"notify": "🔔", "digest": "📋", "mute": "🔇"}.get(result["action"], "❓")
-                    color = {"notify": "bold red", "digest": "bold yellow", "mute": "dim white"}.get(result["action"], "white")
+                    color = {"notify": "white", "digest": "cyan", "mute": "dim white"}.get(result["action"], "white")
                     
                     desc = f"[cyan]Routing...[/cyan] [{color}]{emoji} {msg_id} → {result['action']}[/]"
                     progress.update(task_id, advance=1, description=desc)
@@ -142,7 +181,7 @@ def main():
                     action_counts["digest"] += 1
                     type_counts["unknown"] = type_counts.get("unknown", 0) + 1
                     
-                    progress.update(task_id, advance=1, description=f"[red]❌ Error on {msg_id}[/red]")
+                    progress.update(task_id, advance=1, description=f"[dim]❌ Error on {msg_id}[/dim]")
 
                 results.append(result)
 
@@ -151,48 +190,70 @@ def main():
                     time.sleep(0.3)
                     
     except KeyboardInterrupt:
-        console.print(Panel(
-            f"[bold yellow]⚠️ Process cancelled by user![/bold yellow]\n[white]Saving {len(results)} completed messages...[/white]",
-            border_style="yellow"
-        ))
+        console.print("\n[dim]⚠️ Process cancelled by user![/dim]")
+        console.print(f"[dim]Saving {len(results)} completed messages...[/dim]\n")
 
     # --- Step 5: Write output.csv ---
-    with console.status("[bold cyan]💾 Step 5: Writing output.csv...", spinner="dots"):
+    with console.status("[cyan]💾 Saving output...[/cyan]", spinner="dots"):
         write_output(results)
     
     # --- Summary ---
     elapsed = time.time() - start_time
     
-    console.print(Panel.fit(
-        f"[bold green]✅ COMPLETE[/bold green] — {len(results)} messages routed in {elapsed:.1f}s",
-        border_style="green"
-    ))
-
-    # Action Table
-    action_table = Table(title="Action Distribution", title_style="bold blue")
-    action_table.add_column("Action", style="cyan", no_wrap=True)
-    action_table.add_column("Count", justify="right", style="magenta")
-    action_table.add_column("Percentage", justify="right", style="green")
-    action_table.add_column("Bar", justify="left")
-
-    for action, count in sorted(action_counts.items()):
-        pct = (count / len(results) * 100) if results else 0.0
-        bar = "[blue]" + "█" * int(pct / 2) + "[/blue]"
-        action_table.add_row(action, str(count), f"{pct:.1f}%", bar)
-
-    # Type Table
-    type_table = Table(title="Message Type Distribution", title_style="bold magenta")
-    type_table.add_column("Type", style="cyan")
-    type_table.add_column("Count", justify="right", style="magenta")
-
-    for mtype, count in sorted(type_counts.items(), key=lambda x: -x[1]):
-        type_table.add_row(mtype, str(count))
-
-    console.print("\n")
-    console.print(action_table)
-    console.print("\n")
-    console.print(type_table)
-    console.print(f"\n[dim]Output saved to: {OUTPUT_PATH}[/dim]")
+    console.print("\n[white]✓ Routing Complete[/white]\n")
+    console.print(f"[white]{len(results)} messages processed[/white]\n")
+    
+    # Show Stage 2-3 Summaries
+    # Show Stage 2-3 Summaries
+    console.print(images_panel)
+    console.print(vn_panel)
+    
+    action_table = Table(show_header=False, box=None, padding=(0, 4))
+    action_table.add_column(justify="left")
+    action_table.add_column(justify="right")
+    
+    action_info = {
+        "mute": ("🔕", "Muted"),
+        "digest": ("🗃️ ", "Digested"),
+        "notify": ("🔔", "Notified")
+    }
+    
+    for action, count in sorted(action_counts.items(), key=lambda x: -x[1]):
+        icon, label = action_info.get(action, ("", action.capitalize()))
+        action_table.add_row(f"[white]{icon} {label}[/white]", f"[white]{count}[/white]")
+        
+    console.print(Panel(action_table, title="[white]📨 Message Actions[/white]", title_align="left", border_style="dim"))
+    
+    type_table = Table(show_header=False, box=None, padding=(0, 4))
+    type_table.add_column(justify="left")
+    type_table.add_column(justify="right")
+    
+    if type_counts:
+        for mtype, count in sorted(type_counts.items(), key=lambda x: -x[1]):
+            label = mtype.replace("_", " ").title()
+            type_table.add_row(f"[white]{label}[/white]", f"[white]{count}[/white]")
+    else:
+        type_table.add_row("[dim]None[/dim]", "")
+        
+    console.print(Panel(type_table, title="[white]Message Types[/white]", title_align="left", border_style="dim"))
+    
+    console.print("\n[dim]─────────────────────────────────[/dim]\n")
+    
+    meta_table = Table(show_header=False, box=None, padding=(0, 4))
+    meta_table.add_column(justify="left")
+    meta_table.add_column(justify="left")
+    
+    mins, secs = divmod(int(elapsed), 60)
+    time_str = f"{mins}m {secs}s" if mins > 0 else f"{secs}s"
+    cost = len(results) * 0.0001
+    model_name = ROUTING_MODEL.replace("gpt", "GPT")
+    
+    meta_table.add_row("[white]Time[/white]", f"[white]{time_str}[/white]")
+    meta_table.add_row("[white]Cost[/white]", f"[white]${cost:.2f}[/white]")
+    meta_table.add_row("[white]Model[/white]", f"[white]{model_name}[/white]")
+    
+    console.print(meta_table)
+    console.print()
 
 
 def write_output(results: list[dict]):
@@ -206,7 +267,7 @@ def write_output(results: list[dict]):
 
 def validate_output():
     """Quick validation of the output file."""
-    console.print("\n[bold cyan]🔍 Validating output.csv...[/bold cyan]")
+    console.print("\n[cyan]🔍 Validating output.csv...[/cyan]")
     with open(OUTPUT_PATH) as f:
         reader = csv.DictReader(f)
         rows = list(reader)

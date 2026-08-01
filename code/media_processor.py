@@ -234,38 +234,58 @@ class MediaProcessor:
         else:
             return ".mp3"  # fallback
 
-    def process_all(self, data_loader) -> dict:
-        """Pre-process all media files upfront.
-
-        Args:
-            data_loader: DataLoader instance to get file paths
-
-        Returns:
-            dict mapping media_id -> processed content
-        """
+    def process_images(self, data_loader, console=None) -> tuple[dict, dict]:
+        """Pre-process all images upfront. Returns results and stats."""
         results = {}
-
-        # Process images
-        print(f"📷 Processing {len(data_loader.images_df)} images...")
+        img_start = time.time()
+        img_cache_hits = 0
+        img_total = len(data_loader.images_df)
+        
         for _, row in data_loader.images_df.iterrows():
             image_id = row["image_id"]
             file_path = row["file_path"]
-            cached = image_id in self._image_cache
+            
+            if image_id in self._image_cache:
+                img_cache_hits += 1
+                
             result = self.describe_image(image_id, file_path)
             results[image_id] = {"type": "image", **result}
-            status = "cached" if cached else "processed"
-            print(f"  {'✓' if cached else '→'} {image_id}: {status} — {result.get('category', 'unknown')}")
+            
+            if console:
+                category = result.get('category', 'unknown')
+                formatted_category = category.replace("_", " ").title()
+                console.print(f"  [green]✓[/green] [white]{image_id}: {formatted_category}[/white]")
+            
+        img_time_ms = int((time.time() - img_start) * 1000)
+        img_stats = {
+            "total": img_total,
+            "cache_hits": img_cache_hits,
+            "time_ms": img_time_ms
+        }
+        return results, img_stats
 
-        # Process voice notes
-        print(f"\n🎤 Processing {len(data_loader.voice_notes_df)} voice notes...")
+    def process_voice_notes(self, data_loader, console=None) -> tuple[dict, dict]:
+        """Pre-process all voice notes upfront. Returns results and stats."""
+        results = {}
+        vn_start = time.time()
+        vn_cache_hits = 0
+        vn_total = len(data_loader.voice_notes_df)
+        
         for _, row in data_loader.voice_notes_df.iterrows():
             vn_id = row["voice_note_id"]
             file_path = row["file_path"]
-            cached = vn_id in self._voice_cache
+            
+            if vn_id in self._voice_cache:
+                vn_cache_hits += 1
+                
             result = self.transcribe_voice_note(vn_id, file_path)
             results[vn_id] = {"type": "voice", **result}
-            status = "cached" if cached else "transcribed"
-            print(f"  {'✓' if cached else '→'} {vn_id}: {status}")
-
-        print(f"\n✅ Media processing complete: {len(results)} items")
-        return results
+            
+            if console:
+                console.print(f"  [green]✓[/green] [white]{vn_id}: Transcribed[/white]")
+            
+        vn_stats = {
+            "total": vn_total,
+            "cache_hits": vn_cache_hits
+        }
+        return results, vn_stats
