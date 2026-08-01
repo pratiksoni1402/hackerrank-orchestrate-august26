@@ -1,0 +1,28 @@
+# Environment & Secrets
+.env
+*.env
+
+# Python Caches & Environments
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.venv/
+venv/
+ENV/
+env/
+
+# Data Cache
+code/.cache/
+.cache/
+
+# OS / Editor Files
+.DS_Store
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Log files
+*.log
+EOF
