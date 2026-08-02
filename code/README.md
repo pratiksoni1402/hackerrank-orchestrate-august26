@@ -15,6 +15,9 @@ The solution uses a multi-agent architecture with **gpt-4o-mini** and **whisper-
 1. Ensure you have Python 3.10+ installed.
 2. Create and activate a virtual environment (recommended):
    ```bash
+   # If you are stuck in an old or broken environment, deactivate it first:
+   # deactivate
+   
    python3 -m venv .venv
    source .venv/bin/activate
    ```
