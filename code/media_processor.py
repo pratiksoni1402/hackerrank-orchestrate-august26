@@ -84,22 +84,32 @@ class MediaProcessor:
         # Detect actual image format from magic bytes (files may have wrong extension)
         mime_type = self._detect_image_format(full_path)
 
-        # AVIF and other unsupported formats can't be sent to OpenAI Vision
         if mime_type not in ("image/jpeg", "image/png", "image/gif", "image/webp"):
-            result = {
-                "description": f"Image in unsupported format ({mime_type}), cannot analyze",
-                "extracted_text": "",
-                "category": "unknown",
-                "risk_signals": []
-            }
-            self._image_cache[image_id] = result
-            self._save_cache(self._image_cache, self._image_cache_path)
-            return result
-
-
-        # Read and encode image
-        with open(full_path, "rb") as f:
-            image_data = base64.b64encode(f.read()).decode("utf-8")
+            # Transcode unsupported formats (e.g. AVIF) to JPEG in memory
+            import io
+            from PIL import Image
+            import pillow_avif
+            try:
+                with Image.open(full_path) as img:
+                    img = img.convert("RGB")
+                    buffer = io.BytesIO()
+                    img.save(buffer, format="JPEG")
+                    image_data = base64.b64encode(buffer.getvalue()).decode("utf-8")
+                    mime_type = "image/jpeg"
+            except Exception as e:
+                result = {
+                    "description": f"Image in unsupported format ({mime_type}) and transcoding failed: {e}",
+                    "extracted_text": "",
+                    "category": "unknown",
+                    "risk_signals": []
+                }
+                self._image_cache[image_id] = result
+                self._save_cache(self._image_cache, self._image_cache_path)
+                return result
+        else:
+            # Read and encode supported image natively
+            with open(full_path, "rb") as f:
+                image_data = base64.b64encode(f.read()).decode("utf-8")
 
         result = None
         async with self.semaphore:
