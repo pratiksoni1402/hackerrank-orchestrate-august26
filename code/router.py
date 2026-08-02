@@ -309,7 +309,7 @@ class Router:
             return {
                 "action": "mute",
                 "message_type": classification,
-                "reason": f"[Screened] {screening_result.get('reason', 'Detected ' + classification)}",
+                "reason": screening_result.get('reason', 'Detected ' + classification),
                 "confidence": 0.95,
                 "evidence_message_ids": "none"
             }
