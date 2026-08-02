@@ -18,7 +18,45 @@ from config import (
     MAX_CONCURRENT_ROUTING
 )
 
-# --- System Prompt ---
+# --- Screening Agent Prompt ---
+SCREENING_SYSTEM_PROMPT = """You are a frontline security screening agent for a WhatsApp Notification Router.
+Your only job is to detect obvious scams, phishing, and hard spam.
+
+SCAM DETECTION (always mute):
+- Requests for OTP, password, PIN, CVV, or login codes
+- Fake support/account blocking threats
+- Suspicious URLs that don't match the claimed brand
+- Pressure tactics ("act now or lose access")
+
+SPAM DETECTION:
+- Unsolicited bulk commercial messages that offer no value.
+
+If the message is clearly a scam or severe spam, classify it as 'scam' or 'spam'.
+If it is anything else (personal, legitimate business, promotions, events, etc.), classify it as 'safe' and let the main routing agent handle it.
+"""
+
+SCREENING_RESPONSE_FORMAT = {
+    "type": "json_schema",
+    "json_schema": {
+        "name": "screening_decision",
+        "strict": True,
+        "schema": {
+            "type": "object",
+            "properties": {
+                "classification": {
+                    "type": "string",
+                    "enum": ["scam", "spam", "safe"]
+                },
+                "reason": {"type": "string"}
+            },
+            "required": ["classification", "reason"],
+            "additionalProperties": False
+        }
+    }
+}
+
+
+# --- Main Routing System Prompt ---
 SYSTEM_PROMPT = """You are a WhatsApp Message Notification Router. For each incoming message, you must decide how the receiving user should be notified.
 
 YOUR TASK: Analyze the message, sender context, user behavior, and historical evidence to produce a routing decision.
@@ -78,7 +116,13 @@ DECISION GUIDELINES:
    - New/unknown sender asking for sensitive info → suspicious
    - Urgent work requests with deadlines → notify
 
-7. CONFIDENCE CALIBRATION:
+7. EDGE CASES & ANTI-HALLUCINATION:
+   - Sarcasm/Jokes: Treat casual sarcastic messages between friends as digest.
+   - Duplicate/Repeated messages: If the user ignored the exact same message recently, mute it.
+   - Internal Company Messages: Updates from HR/IT with trusted domains are notify.
+   - Do NOT assume facts outside the provided context. If evidence is lacking, rely strictly on the message text.
+
+8. CONFIDENCE CALIBRATION:
    - Output confidence between 0.75 and 0.92
    - Higher confidence for clear-cut cases (obvious scams, verified order updates)
    - Lower confidence for ambiguous cases (borderline promotional/informational)
@@ -212,6 +256,41 @@ class Router:
             return float(match.group(1))
         return 1.0
 
+    async def _run_screening_async(self, formatted_context: str) -> dict:
+        """Run the fast screening pass to detect obvious scams/spam."""
+        messages = [
+            {"role": "system", "content": SCREENING_SYSTEM_PROMPT},
+            {"role": "user", "content": formatted_context}
+        ]
+        
+        async with self.semaphore:
+            for attempt in range(MAX_RETRIES):
+                try:
+                    response = await self.async_client.chat.completions.create(
+                        model=ROUTING_MODEL,
+                        messages=messages,
+                        max_tokens=100,
+                        temperature=0.0,
+                        response_format=SCREENING_RESPONSE_FORMAT,
+                    )
+                    raw = response.choices[0].message.content.strip()
+                    try:
+                        return json.loads(raw)
+                    except json.JSONDecodeError:
+                        return {"classification": "safe", "reason": "parsing error"}
+                except RateLimitError as e:
+                    retry_after = self._parse_retry_after(str(e))
+                    wait = retry_after + random.uniform(0.1, 0.5)
+                    if attempt < MAX_RETRIES - 1:
+                        await asyncio.sleep(wait)
+                    else:
+                        return {"classification": "safe", "reason": "rate limit"}
+                except Exception:
+                    if attempt == MAX_RETRIES - 1:
+                        return {"classification": "safe", "reason": "error"}
+                    await asyncio.sleep(RETRY_DELAY_BASE ** (attempt + 1))
+        return {"classification": "safe", "reason": "fallback"}
+
     async def route_async(self, formatted_context: str, evidence_list: list[dict]) -> dict:
         """Route a single message using the LLM (async with concurrency control).
 
@@ -222,6 +301,20 @@ class Router:
         Returns:
             dict with action, message_type, reason, confidence, evidence_message_ids
         """
+        # Stage 1: Screening Agent
+        screening_result = await self._run_screening_async(formatted_context)
+        classification = screening_result.get("classification", "safe")
+        
+        if classification in ("scam", "spam"):
+            return {
+                "action": "mute",
+                "message_type": classification,
+                "reason": f"[Screened] {screening_result.get('reason', 'Detected ' + classification)}",
+                "confidence": 0.95,
+                "evidence_message_ids": "none"
+            }
+
+        # Stage 2: Main Routing Agent
         messages = [
             {"role": "system", "content": SYSTEM_PROMPT},
             *FEW_SHOT_EXAMPLES,

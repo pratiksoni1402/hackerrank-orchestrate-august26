@@ -30,6 +30,7 @@ from evidence_retriever import EvidenceRetriever
 from context_assembler import ContextAssembler
 from router import Router
 from safety import SafetyChecker
+from logger import telemetry
 
 console = Console()
 
@@ -137,6 +138,7 @@ async def main():
         msg_id = msg["message_id"]
 
         try:
+            start_time = time.time()
             # Evidence retrieval and context assembly are CPU-bound and fast
             evidence = er.find_evidence(msg)
             context = ca.assemble(msg, evidence)
@@ -144,6 +146,7 @@ async def main():
 
             # LLM routing — async, concurrency-controlled by router's semaphore
             llm_result = await router.route_async(formatted_context, evidence)
+            latency_ms = int((time.time() - start_time) * 1000)
 
             # Safety post-check — CPU-bound, instant
             final_result = safety.check(msg, context, llm_result)
@@ -160,6 +163,15 @@ async def main():
                 "confidence": final_result["confidence"],
                 "evidence_message_ids": final_result["evidence_message_ids"]
             }
+            
+            telemetry.info(
+                f"Routed {msg_id}",
+                extra={"telemetry": {
+                    "message_id": msg_id,
+                    "action": result["action"],
+                    "latency_ms": latency_ms
+                }}
+            )
 
         except Exception as e:
             # Fallback for any error
