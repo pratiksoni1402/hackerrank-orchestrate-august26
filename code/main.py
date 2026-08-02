@@ -358,5 +358,8 @@ def validate_output():
 
 
 if __name__ == "__main__":
-    asyncio.run(main())
-    validate_output()
+    try:
+        asyncio.run(main())
+        validate_output()
+    except KeyboardInterrupt:
+        print("\nProcess interrupted by user. Exiting...")
