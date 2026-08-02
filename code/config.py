@@ -43,6 +43,8 @@ OUTPUT_COLUMNS = [
 ]
 
 # --- Rate Limiting ---
-MAX_RETRIES = 3
+MAX_RETRIES = 5
 RETRY_DELAY_BASE = 2  # seconds, exponential backoff
 BATCH_SIZE = 5        # concurrent API calls
+MAX_CONCURRENT_ROUTING = 5    # concurrent LLM routing calls (tuned for 200K TPM limit)
+MAX_CONCURRENT_MEDIA = 5      # concurrent media processing calls
